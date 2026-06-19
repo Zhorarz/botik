@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import os
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -10,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import BOT_TOKEN, ADMIN_CHAT_ID
 from database import db
 from keyboards import main_menu_kb, category_kb, dish_kb, order_kb, confirm_order_kb, admin_menu_kb
-from instagram_importer import download_highlights, extract_text_from_image, parse_dish, save_to_db
+from instagram_importer import download_highlights
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -92,15 +93,14 @@ async def import_receive_highlight(message: Message, state: FSMContext):
     await state.clear()
 
     status_msg = await message.answer(
-        f"⏳ Starting import...\n\n"
+        f"⏳ Downloading...\n\n"
         f"📸 Instagram: *@{username}*\n"
         f"🔖 Highlight: *{highlight_name}*\n\n"
-        f"This may take a minute...",
+        f"This may take a minute (going slowly to avoid Instagram limits)...",
         parse_mode="Markdown"
     )
 
     try:
-        # Run in executor so it doesn't block the bot
         loop = asyncio.get_event_loop()
         downloaded = await loop.run_in_executor(
             None, download_highlights, username, highlight_name
@@ -118,44 +118,16 @@ async def import_receive_highlight(message: Message, state: FSMContext):
 
         await status_msg.edit_text(
             f"📥 Downloaded *{len(downloaded)}* images\n"
-            f"🔍 Running OCR...",
+            f"Sending them to you now 👇",
             parse_mode="Markdown"
         )
 
-        # OCR + parse
-        dishes_by_category = {}
-        failed = 0
         for item in downloaded:
-            text = extract_text_from_image(item["path"])
-            dish = parse_dish(text)
-            if dish:
-                dishes_by_category.setdefault(item["category"], []).append(dish)
-            else:
-                failed += 1
+            photo_file = FSInputFile(item["path"])
+            await message.answer_photo(photo_file)
 
-        total_dishes = sum(len(v) for v in dishes_by_category.values())
-
-        if not total_dishes:
-            await status_msg.edit_text(
-                f"⚠️ Downloaded {len(downloaded)} images but couldn't parse any dishes.\n\n"
-                f"The OCR may not be reading your image style correctly.\n"
-                f"Send me a sample image and I can help tune it!",
-                parse_mode="Markdown"
-            )
-            return
-
-        # Save to DB
-        await save_to_db(dishes_by_category)
-
-        lines = []
-        for cat, dishes in dishes_by_category.items():
-            lines.append(f"*{cat}*: {len(dishes)} dishes")
-
-        await status_msg.edit_text(
-            f"✅ *Import complete!*\n\n"
-            f"📦 {total_dishes} dishes saved to menu\n"
-            + "\n".join(lines) +
-            (f"\n⚠️ {failed} images skipped (couldn't parse)" if failed else ""),
+        await message.answer(
+            f"✅ Sent all {len(downloaded)} images from *{highlight_name}*!",
             reply_markup=admin_menu_kb(),
             parse_mode="Markdown"
         )
